@@ -6,6 +6,7 @@ const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const path = require('path');
 const cors = require('cors');
+const cron = require("node-cron");
 
 app.use(express.json());
 app.use(cors());
@@ -47,54 +48,60 @@ const Users = mongoose.model('Users', UserSchema);
 
 // Register endpoint
 app.post('/signup', async (req, res) => {
-    let check = await Users.findOne({ email: req.body.email });
-    if (check) {
-        return res.status(400).json({ success: false, errors: 'existing user found' });
-    }
+  let check = await Users.findOne({ email: req.body.email });
+  if (check) {
+      return res.status(400).json({ success: false, errors: 'Existing user found' });
+  }
 
-    let cart = {};
-    for (let i = 0; i < 300; i++) {
-        cart[i] = 0;
-    }
+  let cart = {};
+  for (let i = 0; i < 300; i++) {
+      cart[i] = 0;
+  }
 
-    const user = new Users({
-        username: req.body.username,
-        email: req.body.email,
-        password: req.body.password,
-        cartData: cart,
-    });
+  const user = new Users({
+      username: req.body.username,
+      email: req.body.email,
+      password: req.body.password,  // ⚠️ Consider hashing the password
+      cartData: cart,
+  });
 
-    await user.save();
+  await user.save();
 
-    const data = {
-        user: {
-            id: user.id
-        }
-    };
-    const token = jwt.sign(data, 'secret_ecom');
-    res.json({ success: true, token });
+  const data = {
+      user: {
+          id: user._id   // ✅ Ensure user ID is returned
+      }
+  };
+
+  const token = jwt.sign(data, 'secret_ecom');
+
+  res.json({ success: true, token, userId: user._id });  // ✅ Added userId in response
 });
+
 
 // Login endpoint
 app.post('/login', async (req, res) => {
-    let user = await Users.findOne({ email: req.body.email });
-    if (user) {
-        const passCompare = req.body.password === user.password;
-        if (passCompare) {
-            const data = {
-                user: {
-                    id: user.id
-                }
-            };
-            const token = jwt.sign(data, 'secret_ecom');
-            res.json({ success: true, token });
-        } else {
-            res.json({ success: false, errors: "Wrong password" });
-        }
-    } else {
-        res.json({ success: false, errors: 'wrong email Id' });
-    }
+  let user = await Users.findOne({ email: req.body.email });
+  if (user) {
+      const passCompare = req.body.password === user.password;
+      if (passCompare) {
+          const data = {
+              user: {
+                  id: user.id
+              }
+          };
+          const token = jwt.sign(data, 'secret_ecom');
+          
+          // ✅ Include userId in response
+          res.json({ success: true, token, userId: user._id });
+      } else {
+          res.json({ success: false, errors: "Wrong password" });
+      }
+  } else {
+      res.json({ success: false, errors: 'Wrong email ID' });
+  }
 });
+
 
 // Question Schema (MongoDB collection name will be 'questions' by default)
 const QuestionSchema = new mongoose.Schema({
@@ -381,7 +388,198 @@ app.post("/save-performance", async (req, res) => {
   }
 });
   
-  
+ // Schedule job to run every day at midnight
+cron.schedule("0 0 * * *", async () => {
+  console.log("🔄 Running daily reschedule job...");
+
+  try {
+      // Fetch all users with schedules
+      const users = await Schedule.find({});
+
+      for (let userSchedule of users) {
+          let userId = userSchedule.userId;
+
+          // Fetch user's performance data
+          const performance = await Performance.findOne({ userId });
+
+          if (!performance) continue; // Skip if no performance data
+
+          // Extract pending questions from PerformanceSchema
+          let pendingQuestions = performance.questions
+              .filter(q => q.status === "pending")
+              .map(q => q.questionId.toString());
+
+          // Extract upcoming scheduled questions from ScheduleSchema
+          let upcomingQuestions = [];
+          userSchedule.schedules.forEach(schedule => {
+              schedule.dates.forEach(dateEntry => {
+                  dateEntry.questions.forEach(q => {
+                      upcomingQuestions.push(q.questionId.toString());
+                  });
+              });
+          });
+
+          // Merge pending and upcoming questions (Remove Duplicates)
+          let allQuestions = [...new Set([...pendingQuestions, ...upcomingQuestions])];
+
+          // Fetch full question details from existing schedule (No need for `Question` collection)
+          let questions = [];
+          userSchedule.schedules.forEach(schedule => {
+              schedule.dates.forEach(dateEntry => {
+                  dateEntry.questions.forEach(q => {
+                      if (allQuestions.includes(q.questionId.toString())) {
+                          questions.push({
+                              _id: q.questionId,
+                              topic: q.topic || "Unknown",
+                              question: q.question || "No question text",
+                              link: q.link || "",
+                              difficultylevel: q.difficultylevel || "medium",
+                          });
+                      }
+                  });
+              });
+          });
+
+          // Run `generateSchedule` on the collected questions
+          let newSchedule = await generateSchedule2({
+              proficiency: {}, // Fetch if available
+              dailyTime: 120, // Default daily time, can be adjusted per user
+              startDate: new Date(), // Start from today
+              enoughTime: true,
+              questions
+          });
+
+          // Update schedule in database
+          userSchedule.schedules = [
+              {
+                  scheduleId: new mongoose.Types.ObjectId(),
+                  dates: Object.keys(newSchedule).map(date => ({
+                      date,
+                      questions: newSchedule[date].map(q => ({
+                          questionId: q._id,
+                          topic: q.topic,
+                          question: q.question,
+                          link: q.link,
+                          status: "pending"
+                      }))
+                  }))
+              }
+          ];
+
+          await userSchedule.save();
+          console.log(`✅ Rescheduled for user ${userId}`);
+      }
+  } catch (error) {
+      console.error("❌ Error updating schedules:", error);
+  }
+});
+const generateSchedule2 = async (userInput) => {
+  let { proficiency, dailyTime, startDate, enoughTime, questions } = userInput;
+
+  // Filter questions based on proficiency (if needed)
+  questions = filterByProficiency(questions, proficiency);
+
+  // Sort questions by priority and difficulty
+  questions = sortQuestions(questions);
+
+  // Allocate questions to the schedule
+  let schedule = allocateQuestions2(questions, dailyTime, new Date(startDate), enoughTime);
+  return schedule;
+};
+
+const allocateQuestions2 = (questions, dailyTime, startDate, enoughTime) => {
+  let schedule = {};
+  let currentDate = new Date();
+  let endDate = new Date(startDate); // Start from today
+
+  let groupedQuestions = groupQuestionsByTopic(questions);
+  let topics = Object.keys(groupedQuestions);
+  let remainingQuestions = topics.map(topic => [...groupedQuestions[topic]]);
+
+  while (remainingQuestions.some(arr => arr.length > 0) && currentDate <= endDate) {
+      let timeLeft = dailyTime;
+      let dayQuestions = [];
+
+      for (let i = 0; i < topics.length; i++) {
+          let topic = topics[i];
+          if (remainingQuestions[i].length > 0) {
+              let q = remainingQuestions[i].shift(); // Take the first question
+              let qTime = TIME_PER_QUESTION[q.difficultylevel] || 10; // Default to 10 min
+
+              if (timeLeft >= qTime) {
+                  dayQuestions.push({ 
+                      _id: q._id, 
+                      topic: q.topic, 
+                      question: q.question, 
+                      link: q.link, 
+                      time: qTime 
+                  });
+                  timeLeft -= qTime;
+              } else {
+                  remainingQuestions[i].unshift(q); // Put back if not enough time
+              }
+          }
+      }
+
+      if (dayQuestions.length > 0) {
+          schedule[currentDate.toISOString().split("T")[0]] = dayQuestions;
+      }
+
+      currentDate.setDate(currentDate.getDate() + 1); // Move to the next day
+  }
+
+  return schedule;
+};
+app.get("/api/check-schedule/:userId", async (req, res) => {
+  try {
+      const { userId } = req.params;
+
+      // Check if the user has a saved schedule
+      const schedule = await Schedule.findOne({ userId });
+
+      if (schedule && schedule.schedules.length > 0) {
+          return res.json({ hasSchedule: true });
+      } else {
+          return res.json({ hasSchedule: false });
+      }
+  } catch (error) {
+      console.error("Error checking schedule:", error);
+      res.status(500).json({ message: "Server error" });
+  }
+});
+
+app.get('/schedules/:userId', async (req, res) => {
+  try {
+      const userId = req.params.userId;
+      const userSchedule = await Schedule.findOne({ userId });
+
+      if (!userSchedule) {
+          return res.status(404).json({ success: false, message: 'No schedule found' });
+      }
+
+      res.json({ success: true, schedule: userSchedule });
+  } catch (error) {
+      console.error('Error fetching schedule:', error);
+      res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+app.get('/questions/:questionId', async (req, res) => {
+  try {
+    const questionId = req.params.questionId;
+
+    const question = await Question.findById(questionId);
+
+    if (!question) {
+      return res.status(404).json({ success: false, message: 'Question not found' });
+    }
+
+    res.json({ success: true, question: question });
+  } catch (error) {
+    console.error('Error fetching question:', error);
+    res.status(500).json({ success: false, message: 'Internal server error' });
+  }
+});
+
 app.listen(port, (error) => {
     if (!error) {
         console.log('server running on Port ' + port);

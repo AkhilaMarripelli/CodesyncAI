@@ -15,32 +15,58 @@ const Signup = () => {
   const SignUp = async () => {
     console.log("SignUp Function Executed", formData);
     try {
-        const response = await fetch('http://localhost:5000/signup', {
-            method: 'POST',
-            headers: {
-                'Accept': 'application/json',  // Changed to application/json
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(formData),
-        });
-
-        if (!response.ok) {
-            const errorData = await response.json();
-            console.error('Signup failed:', errorData);
-            return;
-        }
-
-        const responseData = await response.json();
-        if (responseData.success) {
-            localStorage.setItem('auth-token', responseData.token);
-            window.location.replace('/');
+      const response = await fetch("http://localhost:5000/signup", {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(formData),
+      });
+  
+      if (!response.ok) {
+        const errorData = await response.json();
+        console.error("Signup failed:", errorData);
+        return;
+      }
+  
+      const responseData = await response.json();
+      if (responseData.success) {
+        localStorage.setItem("auth-token", responseData.token);
+        
+        // ✅ Get userId from response and store it
+        const userId = responseData.userId;
+        localStorage.setItem("userId", userId);
+  
+        if (userId) {
+          checkUserSchedule(userId); // Check if schedule exists
         } else {
-            console.error('Signup failed:', responseData.errors);
+          console.error("User ID not found in response");
+          window.location.replace("/");
         }
+      } else {
+        console.error("Signup failed:", responseData.errors);
+      }
     } catch (error) {
-        console.error('Error during signup:', error);
+      console.error("Error during signup:", error);
     }
-}
+  };
+  const checkUserSchedule = async (userId) => {
+    try {
+      const response = await fetch(`http://localhost:5000/api/check-schedule/${userId}`);
+      const data = await response.json();
+      
+      if (data.hasSchedule) {
+        window.location.replace("/myassistant"); // ✅ Redirect if schedule exists
+      } else {
+        window.location.replace("/"); // ✅ Else, ask them to create one
+      }
+    } catch (error) {
+      console.error("Error checking schedule:", error);
+      window.location.replace("/");
+    }
+  };
+    
 
   return (
     <div>
