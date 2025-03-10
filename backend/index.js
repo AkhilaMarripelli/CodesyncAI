@@ -61,7 +61,7 @@ app.post('/signup', async (req, res) => {
   const user = new Users({
       username: req.body.username,
       email: req.body.email,
-      password: req.body.password,  // ⚠️ Consider hashing the password
+      password: req.body.password,  
       cartData: cart,
   });
 
