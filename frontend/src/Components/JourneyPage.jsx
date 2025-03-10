@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { Link } from 'react-router-dom';
 
 const JourneyPage = () => {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
@@ -138,9 +139,9 @@ const JourneyPage = () => {
                 Dive deeper into your learning path and unlock new knowledge.
               </p>
              
-              <button className="bg-white text-blue-600 py-3 px-8 rounded-full font-semibold text-lg hover:bg-blue-100 transition-colors">
+            <Link to="/SchedulePage"> <button className="bg-white text-blue-600 py-3 px-8 rounded-full font-semibold text-lg hover:bg-blue-100 transition-colors">
                 Continue Now
-              </button>
+              </button></Link> 
             </div>
 
             {/* Recommended Questions (Below Continue Journey) */}
